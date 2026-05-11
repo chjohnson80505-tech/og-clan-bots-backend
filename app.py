@@ -2,6 +2,7 @@ import os
 import uuid
 import time
 import requests
+import re
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import stripe
@@ -19,28 +20,9 @@ stripe.api_key = STRIPE_SECRET
 
 # ---------- HELPERS ----------
 def generate_timed_key(days=1):
-    """Creates a key that embeds the expiration timestamp."""
+    """Creates a key with a clear timestamp."""
     expire_time = int(time.time()) + (int(days) * 86400)
     return f"{uuid.uuid4()}-{expire_time}-OGCLAN"
-
-def discord_has_role(user_id, role_name="ogclanmember"):
-    # Fixed Discord API URL paths
-    url = f"https://discord.com{DISCORD_SERVER}/members/{user_id}"
-    headers = {"Authorization": f"Bot {DISCORD_TOKEN}"}
-    r = requests.get(url, headers=headers)
-    if r.status_code != 200: return False
-    
-    member = r.json()
-    role_url = f"https://discord.com{DISCORD_SERVER}/roles"
-    rr = requests.get(role_url, headers=headers)
-    
-    role_id = None
-    if rr.status_code == 200:
-        for r_obj in rr.json():
-            if r_obj["name"].lower() == role_name.lower():
-                role_id = r_obj["id"]
-                break
-    return role_id in member.get("roles", []) if role_id else False
 
 # ---------- ROUTES ----------
 
@@ -48,19 +30,37 @@ def discord_has_role(user_id, role_name="ogclanmember"):
 def home():
     return "OG Clan Backend is Live!"
 
-@app.route("/api/verify-key", methods=["POST"])
+# ALIASES: Catches /api/verify, /api/login, or /api/verify-key
+@app.route("/api/verify-key", methods=["POST", "GET"])
+@app.route("/api/verify", methods=["POST", "GET"])
+@app.route("/api/login", methods=["POST", "GET"])
 def verify_key():
-    data = request.json
-    key = data.get("key", "")
+    # Catch key from JSON body, URL parameters, or simple Form data
+    data = request.json or {}
+    key = data.get("key") or request.args.get("key") or request.form.get("key") or ""
+    
+    print(f"Checking Key: {key}") # This will show in your Render logs
+
     try:
-        parts = key.split("-")
-        expiration_ts = int(parts[-2]) 
-        if int(time.time()) < expiration_ts:
-            return jsonify({"valid": True, "msg": "Key is active!", "timeLeft": f"{(expiration_ts - int(time.time())) // 3600} hours"})
+        # Regex finds the 10-digit timestamp number inside the key
+        match = re.search(r'-(\d{10})-OGCLAN', key)
+        if not match:
+            return jsonify({"valid": False, "msg": "Invalid key format."})
+            
+        expiration_ts = int(match.group(1))
+        current_ts = int(time.time())
+
+        if current_ts < expiration_ts:
+            return jsonify({
+                "valid": True, 
+                "msg": "Key is active!",
+                "timeLeft": f"{(expiration_ts - current_ts) // 86400} days"
+            })
         else:
             return jsonify({"valid": False, "msg": "Key has expired."})
-    except:
-        return jsonify({"valid": False, "msg": "Invalid key format."})
+    except Exception as e:
+        print(f"Error: {e}")
+        return jsonify({"valid": False, "msg": "Verification error."})
 
 @app.route("/api/key", methods=["POST"])
 def api_key():
@@ -71,36 +71,20 @@ def api_key():
         code = data.get("code", "").strip()
         discord_id = str(data.get("discord_id", ""))
 
-        # ADMIN YEAR PASS CHECK
-        if code == "ADMINKARMAYEARPASS":
-            if discord_id == OWNER_USER_ID:
-                return jsonify({"ok": True, "key": generate_timed_key(365)})
-            else:
-                return jsonify({"ok": False, "msg": "Unauthorized Discord ID."})
-
-        # STANDARD ONE DAY PASS
-        if code == "OGCLANONEDAYPASS":
-            if not discord_has_role(discord_id):
-                return jsonify({"ok": False, "msg": "Missing Discord Role."})
-            return jsonify({"ok": True, "key": generate_timed_key(1)})
-
-        return jsonify({"ok": False, "msg": "Invalid code."})
+        if code == "ADMINKARMAYEARPASS" and discord_id == OWNER_USER_ID:
+            return jsonify({"ok": True, "key": generate_timed_key(365)})
+        
+        return jsonify({"ok": False, "msg": "Invalid code or unauthorized ID."})
 
     if mode == "purchase":
-        # amount is sent in cents from frontend
         amount = int(data.get("amount", 0))
-        try:
-            # Map cents to days based on your frontend prices
-            days = 1 # default
-            if amount == 500: days = 1
-            elif amount == 2000: days = 7
-            elif amount == 3500: days = 30
-            elif amount == 7000: days = 180
-            elif amount == 15000: days = 365
-            
-            return jsonify({"ok": True, "key": generate_timed_key(days)})
-        except Exception as e:
-            return jsonify({"ok": False, "msg": "Error generating purchase key."})
+        days = 1
+        if amount == 500: days = 1
+        elif amount == 2000: days = 7
+        elif amount == 3500: days = 30
+        elif amount == 7000: days = 180
+        elif amount == 15000: days = 365
+        return jsonify({"ok": True, "key": generate_timed_key(days)})
 
     return jsonify({"ok": False, "msg": "Bad request."})
 
