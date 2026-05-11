@@ -13,14 +13,14 @@ CORS(app)
 # ---------- CONFIG ----------
 DISCORD_TOKEN   = os.getenv("DISCORD_TOKEN")
 DISCORD_SERVER  = os.getenv("DISCORD_SERVER_ID")
-OWNER_USER_ID   = "1362029045499432960" # Hardcoded for safety
+OWNER_USER_ID   = "1362029045499432960" 
 STRIPE_SECRET   = os.getenv("STRIPE_SECRET_KEY")
 
 stripe.api_key = STRIPE_SECRET
 
 # ---------- HELPERS ----------
 def generate_timed_key(days=1):
-    """Creates a key with a clear timestamp."""
+    """Creates a key that embeds the expiration timestamp."""
     expire_time = int(time.time()) + (int(days) * 86400)
     return f"{uuid.uuid4()}-{expire_time}-OGCLAN"
 
@@ -30,37 +30,42 @@ def generate_timed_key(days=1):
 def home():
     return "OG Clan Backend is Live!"
 
-# ALIASES: Catches /api/verify, /api/login, or /api/verify-key
+# THE REMOTE CONTROL & VERIFICATION
 @app.route("/api/verify-key", methods=["POST", "GET"])
 @app.route("/api/verify", methods=["POST", "GET"])
 @app.route("/api/login", methods=["POST", "GET"])
+@app.route("/api/redeem", methods=["POST", "GET"])
 def verify_key():
-    # Catch key from JSON body, URL parameters, or simple Form data
+    # Grabs data from everywhere (JSON, URL, Form)
     data = request.json or {}
-    key = data.get("key") or request.args.get("key") or request.form.get("key") or ""
-    
-    print(f"Checking Key: {key}") # This will show in your Render logs
+    args = request.args or {}
+    form = request.form or {}
+    raw  = request.get_data(as_text=True) or ""
+
+    full_search = f"{data} {args} {form} {raw}"
+    print(f"DEBUG: IPA Sent: {full_search}") 
 
     try:
-        # Regex finds the 10-digit timestamp number inside the key
-        match = re.search(r'-(\d{10})-OGCLAN', key)
-        if not match:
-            return jsonify({"valid": False, "msg": "Invalid key format."})
-            
-        expiration_ts = int(match.group(1))
-        current_ts = int(time.time())
+        # Finds the 10-digit timestamp in the key
+        match = re.search(r'(\d{10})', full_search)
+        
+        if match:
+            expiration_ts = int(match.group(1))
+            current_ts = int(time.time())
 
-        if current_ts < expiration_ts:
-            return jsonify({
-                "valid": True, 
-                "msg": "Key is active!",
-                "timeLeft": f"{(expiration_ts - current_ts) // 86400} days"
-            })
-        else:
-            return jsonify({"valid": False, "msg": "Key has expired."})
+            if current_ts < expiration_ts:
+                # Returns EVERY success signal a modded IPA might look for
+                return jsonify({
+                    "valid": True,
+                    "success": True,
+                    "status": "success",
+                    "ok": True,
+                    "timeLeft": f"{(expiration_ts - current_ts) // 86400} days"
+                })
+        
+        return jsonify({"valid": False, "success": False, "msg": "Expired or Invalid"})
     except Exception as e:
-        print(f"Error: {e}")
-        return jsonify({"valid": False, "msg": "Verification error."})
+        return jsonify({"valid": False, "msg": str(e)})
 
 @app.route("/api/key", methods=["POST"])
 def api_key():
@@ -71,10 +76,11 @@ def api_key():
         code = data.get("code", "").strip()
         discord_id = str(data.get("discord_id", ""))
 
+        # ADMIN 12-MONTH BYPASS
         if code == "ADMINKARMAYEARPASS" and discord_id == OWNER_USER_ID:
             return jsonify({"ok": True, "key": generate_timed_key(365)})
         
-        return jsonify({"ok": False, "msg": "Invalid code or unauthorized ID."})
+        return jsonify({"ok": False, "msg": "Invalid code or ID."})
 
     if mode == "purchase":
         amount = int(data.get("amount", 0))
