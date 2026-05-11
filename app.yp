@@ -1,0 +1,106 @@
+import os
+import uuid
+import requests
+from flask import Flask, request, jsonify
+import stripe
+from dotenv import load_dotenv
+
+# This loads your .env file locally, but Render will use its own "Environment Variables"
+load_dotenv()
+
+app = Flask(__name__)
+
+# ---------- CONFIG ----------
+DISCORD_TOKEN   = os.getenv("DISCORD_TOKEN")
+DISCORD_SERVER  = os.getenv("DISCORD_SERVER_ID")
+OWNER_USER_ID   = os.getenv("OWNER_USER_ID")
+STRIPE_SECRET   = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_PUB      = os.getenv("STRIPE_PUBLISHABLE_KEY")
+
+stripe.api_key = STRIPE_SECRET
+
+# ---------- HELPERS ----------
+def discord_has_role(user_id, role_name="ogclanmember"):
+    """Check if the user has the required role in Discord."""
+    # FIXED: Added the correct API path
+    url = f"https://discord.com{DISCORD_SERVER}/members/{user_id}"
+    headers = {"Authorization": f"Bot {DISCORD_TOKEN}"}
+    r = requests.get(url, headers=headers)
+    
+    if r.status_code != 200:
+        return False
+    
+    member = r.json()
+    
+    # FIXED: Added the correct API path for roles
+    role_url = f"https://discord.com{DISCORD_SERVER}/roles"
+    rr = requests.get(role_url, headers=headers)
+    
+    role_id = None
+    if rr.status_code == 200:
+        for role in rr.json():
+            if role["name"].lower() == role_name.lower():
+                role_id = role["id"]
+                break
+    
+    if not role_id:
+        return False
+        
+    return role_id in member.get("roles", [])
+
+def generate_key():
+    """Create a unique random bot key."""
+    return f"{uuid.uuid4()}-OGCLAN"
+
+# ---------- ROUTES ----------
+@app.route("/")
+def home():
+    return "OG Clan Backend is Live!"
+
+@app.route("/api/key", methods=["POST"])
+def api_key():
+    data = request.json
+    if not data:
+        return jsonify({"ok": False, "msg": "No data received."})
+        
+    mode = data.get("mode") 
+
+    if mode == "redeem":
+        code = data.get("code", "").strip()
+        discord_id = data.get("discord_id")
+
+        if code == "OGCLANONEDAYPASS":
+            if not discord_has_role(discord_id):
+                return jsonify({"ok": False, "msg": "You must have the ogclanmember role."})
+            key = generate_key()
+            return jsonify({"ok": True, "key": key, "type": "daily"})
+
+        if code == "ADMINKARMAYEARPASS":
+            if discord_id != OWNER_USER_ID:
+                return jsonify({"ok": False, "msg": "Only the server owner may use this code."})
+            key = generate_key()
+            return jsonify({"ok": True, "key": key, "type": "yearly"})
+
+        return jsonify({"ok": False, "msg": "Invalid redemption code."})
+
+    if mode == "purchase":
+        amount = int(data.get("amount", 0)) 
+        source = data.get("source")          
+        try:
+            charge = stripe.Charge.create(
+                amount=amount,
+                currency="usd",
+                source=source,
+                description="OG Clan Bot Pass"
+            )
+            if charge["paid"]:
+                key = generate_key()
+                return jsonify({"ok": True, "key": key})
+        except stripe.error.StripeError as e:
+            return jsonify({"ok": False, "msg": str(e)})
+
+    return jsonify({"ok": False, "msg": "Bad request."})
+
+if __name__ == "__main__":
+    # Render will use gunicorn, but this stays for local testing
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
